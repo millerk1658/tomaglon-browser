@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mini Browser</title>
+
+<style>
+:root{
+  --accent:#4a8cff;
+  --bg:#ffffff;
+  --panel:#f1f3f4;
+  --panel-dark:#e0e0e0;
+  --text:#000;
+}
+
+body.dark{
+  --bg:#111;
+  --panel:color-mix(in srgb,var(--accent),#111 85%);
+  --panel-dark:color-mix(in srgb,var(--accent),#000 75%);
+  --text:#fff;
+}
+
+body{
+  margin:0;
+  height:100vh;
+  display:flex;
+  flex-direction:column;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Arial,sans-serif;
+}
+
+/* Tabs */
+#tabs{
+  display:flex;
+  gap:4px;
+  padding:4px;
+  background:var(--panel-dark);
+}
+
+.tab{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 8px;
+  background:color-mix(in srgb,var(--panel),var(--accent) 15%);
+  border-left:4px solid transparent;
+  cursor:pointer;
+}
+
+body.dark .tab{
+  background:color-mix(in srgb,var(--panel),#000 30%);
+}
+
+.tab.active{
+  border-left-color:var(--accent);
+}
+
+.tab img{width:16px;height:16px}
+.tab span{
+  max-width:120px;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+
+/* Toolbar */
+#toolbar{
+  display:flex;
+  gap:6px;
+  padding:8px;
+  background:var(--panel);
+}
+
+#search{
+  flex:1;
+  padding:6px;
+  border:none;
+  outline:none;
+  z-index:3;
+}
+
+/* Suggestions */
+#suggestions{
+  position:absolute;
+  top:84px;
+  left:140px;
+  width:320px;
+  background:var(--panel);
+  border:1px solid var(--panel-dark);
+  z-index:2;
+}
+
+.suggestion{
+  padding:6px;
+  cursor:pointer;
+}
+.suggestion:hover{
+  background:var(--accent);
+  color:white;
+}
+
+/* Downloads */
+#downloads{
+  display:none;
+  background:var(--panel-dark);
+  padding:6px;
+  font-size:14px;
+}
+
+iframe{
+  flex:1;
+  border:none;
+  background:white;
+}
+</style>
+</head>
+
+<body>
+
+<div id="tabs"></div>
+
+<div id="toolbar">
+  <button onclick="back()">◀</button>
+  <button onclick="forward()">▶</button>
+
+  <input id="search"
+    placeholder="Search or enter URL"
+    onkeydown="if(event.key==='Enter') go()"
+    oninput="suggest()">
+
+  <button onclick="go()">Go</button>
+  <button onclick="toggleTheme()">🌓</button>
+  <input type="color" onchange="setAccent(this.value)">
+  <button onclick="toggleDownloads()">📥</button>
+  <button onclick="newTab()">＋</button>
+</div>
+
+<div id="suggestions" hidden></div>
+<div id="downloads"></div>
+<iframe id="view"></iframe>
+
+<script>
+/* ===== CONFIG ===== */
+const SEARCH_ENGINE="https://www.bing.com/search?q=";
+const COMMON=["youtube.com","github.com","wikipedia.org","reddit.com"];
+
+/* ===== STATE ===== */
+let tabs=[];
+let currentTab=0;
+let historyList=JSON.parse(localStorage.getItem("history")||"[]");
+let downloads=JSON.parse(localStorage.getItem("downloads")||"[]");
+
+/* ===== THEME ===== */
+function toggleTheme(){
+  document.body.classList.toggle("dark");
+  localStorage.setItem("dark",document.body.classList.contains("dark"));
+}
+if(localStorage.getItem("dark")==="true")toggleTheme();
+
+function setAccent(c){
+  document.documentElement.style.setProperty("--accent",c);
+  localStorage.setItem("accent",c);
+}
+const acc=localStorage.getItem("accent");
+if(acc)setAccent(acc);
+
+/* ===== TABS ===== */
+function createTab(url){
+  return{history:[url],index:0,title:"New Tab",icon:""};
+}
+
+function renderTabs(){
+  tabsDiv.innerHTML="";
+  tabs.forEach((t,i)=>{
+    const d=document.createElement("div");
+    d.className="tab"+(i===currentTab?" active":"");
+    d.onclick=()=>switchTab(i);
+    d.innerHTML=`
+      <img src="${t.icon||'https://www.bing.com/favicon.ico'}">
+      <span ondblclick="renameTab(event,${i})">${t.title}</span>
+      <button onclick="closeTab(event,${i})">✕</button>
+    `;
+    tabsDiv.appendChild(d);
+  });
+  saveSession();
+}
+
+function renameTab(e,i){
+  e.stopPropagation();
+  const n=prompt("Tab name:",tabs[i].title);
+  if(n)tabs[i].title=n;
+  renderTabs();
+}
+
+function closeTab(e,i){
+  e.stopPropagation();
+  tabs.splice(i,1);
+  if(!tabs.length)newTab();
+  if(currentTab>=tabs.length)currentTab=tabs.length-1;
+  loadCurrent();
+  renderTabs();
+}
+
+function newTab(){
+  tabs.push(createTab("about:blank"));
+  currentTab=tabs.length-1;
+  renderTabs();
+}
+
+function switchTab(i){
+  currentTab=i;
+  loadCurrent();
+}
+
+/* ===== NAVIGATION ===== */
+function looksLikeUrl(t){
+  return t.includes(".")&&!t.includes(" ");
+}
+
+function go(){
+  const q=search.value.trim();
+  if(!q)return;
+
+  const url=looksLikeUrl(q)
+    ? (q.startsWith("http")?q:"https://"+q)
+    : SEARCH_ENGINE+encodeURIComponent(q);
+
+  const t=tabs[currentTab];
+  t.history=t.history.slice(0,t.index+1);
+  t.history.push(url);
+  t.index++;
+
+  t.title=looksLikeUrl(q)?new URL(url).hostname:q;
+  t.icon="https://www.google.com/s2/favicons?domain="+t.title;
+
+  historyList.unshift(q);
+  historyList=[...new Set(historyList)].slice(0,50);
+  localStorage.setItem("history",JSON.stringify(historyList));
+
+  loadCurrent();
+}
+
+function loadCurrent(){
+  const t=tabs[currentTab];
+  view.src=t.history[t.index];
+  search.value=t.history[t.index];
+  suggestions.hidden=true;
+}
+
+function back(){
+  const t=tabs[currentTab];
+  if(t.index>0){t.index--;loadCurrent();}
+}
+function forward(){
+  const t=tabs[currentTab];
+  if(t.index<t.history.length-1){t.index++;loadCurrent();}
+}
+
+/* ===== SUGGESTIONS ===== */
+function suggest(){
+  const q=search.value.toLowerCase();
+  if(!q){suggestions.hidden=true;return;}
+  const list=[...historyList,...COMMON]
+    .filter(x=>x.toLowerCase().includes(q));
+  suggestions.innerHTML=[...new Set(list)].slice(0,6)
+    .map(s=>`<div class="suggestion" onclick="search.value='${s}';go()">${s}</div>`).join("");
+  suggestions.hidden=!list.length;
+}
+
+/* ===== DOWNLOAD MANAGER ===== */
+function toggleDownloads(){
+  downloadsBox.style.display=
+    downloadsBox.style.display==="block"?"none":"block";
+  renderDownloads();
+}
+
+function renderDownloads(){
+  downloadsBox.innerHTML="<b>Downloads</b><br>"+
+    downloads.map(d=>`• ${d}`).join("<br>")+
+    `<br><button onclick="addDownload()">Add URL</button>`;
+}
+
+function addDownload(){
+  const url=prompt("Download URL:");
+  if(!url)return;
+  downloads.unshift(url);
+  downloads=downloads.slice(0,10);
+  localStorage.setItem("downloads",JSON.stringify(downloads));
+  renderDownloads();
+}
+
+/* ===== SESSION ===== */
+function saveSession(){
+  localStorage.setItem("session",JSON.stringify({tabs,currentTab}));
+}
+function restoreSession(){
+  const s=JSON.parse(localStorage.getItem("session")||"null");
+  if(s){tabs=s.tabs;currentTab=s.currentTab;renderTabs();loadCurrent();return true;}
+  return false;
+}
+
+/* ===== INIT ===== */
+const tabsDiv=document.getElementById("tabs");
+const search=document.getElementById("search");
+const view=document.getElementById("view");
+const suggestions=document.getElementById("suggestions");
+const downloadsBox=document.getElementById("downloads");
+
+if(!restoreSession()){
+  tabs.push(createTab("https://www.bing.com"));
+  renderTabs();
+  loadCurrent();
+}
+</script>
+
+</body>
+</html>
